@@ -17,6 +17,17 @@ jwt = JWTManager(app)
 @app.route("/auth/register", methods=["POST"])
 def register():
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing request body"}), 400
+
+    required_fields = ["name", "email", "password", "role"]
+    for field in required_fields:
+        if field not in data or not str(data[field]).strip():
+            return jsonify({"error": f"Field '{field}' is required and cannot be empty"}), 400
+
+    role = data["role"].strip().lower()
+    if role not in ["candidate", "employer"]:
+        return jsonify({"error": "Role must be either 'candidate' or 'employer'"}), 400
 
     if User.query.filter_by(email=data["email"]).first():
         return jsonify({"error": "Email already exists"}), 400
@@ -25,7 +36,7 @@ def register():
         name=data["name"],
         email=data["email"],
         password=generate_password_hash(data["password"]),
-        role=data["role"]
+        role=role
     )
     db.session.add(user)
     db.session.commit()
@@ -35,6 +46,14 @@ def register():
 @app.route("/auth/login", methods=["POST"])
 def login():
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing request body"}), 400
+
+    required_fields = ["email", "password"]
+    for field in required_fields:
+        if field not in data or not str(data[field]).strip():
+            return jsonify({"error": f"Field '{field}' is required"}), 400
+
     user = User.query.filter_by(email=data["email"]).first()
 
     if not user or not check_password_hash(user.password, data["password"]):
@@ -51,7 +70,20 @@ def login():
 def create_job():
     user_id = int(get_jwt_identity())
 
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    if user.role != "employer":
+        return jsonify({"error": "Unauthorized: Only employers can post jobs"}), 403
+
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing request body"}), 400
+
+    required_fields = ["title", "description", "company"]
+    for field in required_fields:
+        if field not in data or not str(data[field]).strip():
+            return jsonify({"error": f"Field '{field}' is required and cannot be empty"}), 400
 
     job = Job(
         title=data["title"],
@@ -81,12 +113,36 @@ def list_jobs():
 @app.route("/apply", methods=["POST"])
 @jwt_required()
 def apply_job():
-    user_id = get_jwt_identity()
+    user_id = int(get_jwt_identity())
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    if user.role != "candidate":
+        return jsonify({"error": "Unauthorized: Only candidates can apply for jobs"}), 403
+
     data = request.get_json()
+    if not data or "job_id" not in data:
+        return jsonify({"error": "Field 'job_id' is required"}), 400
+
+    try:
+        job_id = int(data["job_id"])
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid job_id format"}), 400
+
+    # Job existence check
+    job = Job.query.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    # Duplicate check
+    existing_application = Application.query.filter_by(user_id=user_id, job_id=job_id).first()
+    if existing_application:
+        return jsonify({"error": "You have already applied for this job"}), 400
 
     application = Application(
         user_id=user_id,
-        job_id=data["job_id"]
+        job_id=job_id
     )
     db.session.add(application)
     db.session.commit()
